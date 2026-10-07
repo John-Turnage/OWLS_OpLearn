@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# Navier-Stokes dataset (download from Zenodo, see experiments/navier_stokes/raw_data/README.md)
+experiments/navier_stokes/raw_data/*.pt
+
+# Local copies of the paper
+/paper*.pdf
+
+# Cache folder written by the vendored UncertainSCI code (never used here, but just in case)
+data_set/
