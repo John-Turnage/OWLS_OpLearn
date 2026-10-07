@@ -6,11 +6,11 @@ Contains routines that specialize opoly1d things for classical orthogonal polyno
 """
 import numpy as np
 
-from opoly1d import OrthogonalPolynomialBasis1D
-from opoly1d import eval_driver, idistinv_driver, gauss_quadrature_driver
-from opoly1d import linear_modification, quadratic_modification
-from transformations import AffineTransform
-from casting import to_numpy_array
+from .opoly1d import OrthogonalPolynomialBasis1D
+from .opoly1d import eval_driver, idistinv_driver, gauss_quadrature_driver
+from .opoly1d import linear_modification, quadratic_modification
+from .transformations import AffineTransform
+from .casting import to_numpy_array
 
 import os
 import pickle
@@ -607,7 +607,7 @@ class HermitePolynomials(OrthogonalPolynomialBasis1D):
     def recurrence_driver(self, N):
 
         ab = hermite_recurrence_values(N, self.rho/2)
-        if self.probability_measure and N > 0:
+        if self.probability_measure and N >= 0:
             ab[0, 1] = 1.
 
         return ab
@@ -933,7 +933,7 @@ class LaguerrePolynomials(OrthogonalPolynomialBasis1D):
         else:
             raise ValueError('Only alpha=1 half-Freud recurrence coefficients have explicit formulas')
 
-        if self.probability_measure and N > 0:
+        if self.probability_measure and N >= 0:
             ab[0, 1] = 1.
 
         return ab

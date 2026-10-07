@@ -1,313 +1,288 @@
+"""
+Weighted least-squares (WLS) operator learning.
+
+The operator K maps input coefficients f (length d) to output coefficients g = K(f)
+(length d_out) in an orthonormal basis psi_1, ..., psi_{d_out} of the output space.
+We approximate K in the tensor-product space V = Y_h (x) P, i.e.
+
+    K(f)  ~  sum_{m=1}^{d_out}  sum_{n=1}^{N}  C[n, m] p_{lambda_n}(f) psi_m,
+
+where p_{lambda_n} are the orthonormal polynomials picked out by an index set
+(see owls.index_sets) and C is an N x d_out coefficient matrix.
+
+Given training pairs (f_i, g_i), i = 1..M, the coefficients solve
+
+    min_C  (1/M) sum_i  w(f_i) || g_i - C^T p(f_i) ||^2,
+
+with weights
+
+    w(f) = N / sum_n p_{lambda_n}(f)^2   if the f_i were drawn from the optimal measure mu,
+    w(f) = 1                              if the f_i were drawn from rho (Monte Carlo).
+
+Because the output basis is orthonormal, this splits into d_out independent
+least-squares problems that all share the same M x N matrix
+A = diag(sqrt(w/M)) V, with V[i, n] = p_{lambda_n}(f_i). In particular the Gram
+matrix G = A^T A is only N x N, and its conditioning (and so the number of samples
+needed for stability) depends on N = dim P, not on d_out.
+
+Stability: if ||G - I||_2 <= delta, the discrete least-squares norm is within a
+factor (1 +- delta) of the true L^2_rho norm on V, and cond(G) <= (1+delta)/(1-delta).
+Under optimal sampling this holds with probability >= 1 - eps once
+M >= c_delta N log(2N/eps); see owls.utils.sample_size.
+"""
+import warnings
+
 import numpy as np
-import sys
-sys.path.insert(0, '../Modules/')
-from families import JacobiPolynomials
-import matplotlib.pyplot as plt
-import matplotlib.colors as colors
+
+from .measures import Jacobi, as_measures, as_rng, vandermonde, sample_optimal, sample_rho
 
 
-class Block_WLS:
-    def __init__(self, jacobi_params, index_set, input_samples, output_samples, induced):
+def _check_bool(optimal):
+    if not isinstance(optimal, (bool, np.bool_)):
+        raise TypeError("optimal must be True (optimal sampling and weights) or False (Monte Carlo, unit weights)")
+
+
+def optimal_weights(V):
+    """Weights w_i = N / sum_n V[i, n]^2 for samples drawn from the optimal measure."""
+    return V.shape[1] / np.sum(V**2, axis=1)
+
+
+def gram_cond(A):
+    """Condition number of G = A^T A (infinite if A has fewer rows than columns)."""
+    if A.shape[0] < A.shape[1]:
+        return np.inf
+    return np.linalg.cond(A) ** 2
+
+
+def gram_deviation(A):
+    """||G - I||_2 for G = A^T A, computed from the singular values of A."""
+    s = np.linalg.svd(A, compute_uv=False)
+    lam_max = s[0] ** 2
+    lam_min = s[-1] ** 2 if A.shape[0] >= A.shape[1] else 0.0
+    return max(abs(lam_max - 1), abs(1 - lam_min))
+
+
+class _GramMixin:
+    """cond() and gram_deviation() for classes that store the weighted matrix A."""
+
+    def gram(self):
+        """The N x N Gram matrix G = A^T A."""
+        return self.A.T @ self.A
+
+    def cond(self):
+        """Condition number of the Gram matrix G."""
+        return gram_cond(self.A)
+
+    def gram_deviation(self, delta=0.5, warn=True):
         """
-        Initializes the Weighted Least Squares (WLS) operator learning model.
-        
-        The operator K is approximated as:
-            K(f) ≈ tilde K(f) = sum_{n}c_n Phi_n(f)
-        where {Phi_n} is the full dictionary of basis functions (indexed by index_set),
-        and the coefficients c_n are obtained by solving a weighted least-squares system.
-        
-        If induced = True 
-            The weights are computed using the full dictionary:
-                w_i = N /(sum_n ||Phi_n(f_i)||^2) ,
-            ensuring optimal stability.
-        Else: 
-            The weights are set to one uniformly 
-            
-        Parameters:
-            jacobi_params : list
-                Parameters for constructing the Jacobi polynomial bases: [(a_i,b_i) for i in range input_dim].
-            index_set : ndarray
-                Array of shape (N, input_dim) indicating the degree of each basis function.
-            input_samples : ndarray
-                Training inputs of shape (M, input_dim).
-            output_samples : ndarray
-                Training outputs of shape (M, out_dim).
+        ||G - I||_2, the quantity the stability theory controls.
+
+        Warns if it exceeds delta (then the least-squares fit may be unreliable:
+        take more samples, or use optimal sampling).
         """
-        self.jacobi_params = jacobi_params
-        self.index_set = index_set              # (N, input_dim)
-        self.input_samples = input_samples      # (M, input_dim)
-        self.output_samples = output_samples    # (M, out_dim)
-        
-        self.M = input_samples.shape[0]         # Number of training samples.
-        self.N = index_set.shape[0]             # Total number of candidate basis functions.
-        self.input_dim = input_samples.shape[1]
-        self.out_dim = output_samples.shape[1]
-        self.induced = induced 
-        
-        # Create JacobiPolynomials for each input dimension.
-        self.JacobiPolys = [JacobiPolynomials(*params) for params in self.jacobi_params]
-        
-        # Build the full Vandermonde matrix for training inputs (shape: (M, N)).
-        self.V = self.build_vandermonde(self.input_samples)
-        
-        # Compute the optimal weights for each sample:
-        #   w_i = N /(sum_n ||Phi_n(f_i)||^2).
-        if self.induced == True: 
-            self.weights = self.N / np.sum(self.V**2, axis=1)
-        elif self.induced == False: 
-            self.weights = np.ones(self.M)
-        
-        # Form the diagonal scaling matrix D = sqrt(weights/M) (shape: (M, 1)).
-        self.D = np.sqrt(self.weights / self.M)[:, np.newaxis]
-        
-        # Weighted Vandermonde matrix: A = D * V.
-        self.A = self.D * self.V
-        
-        # Solve for the full coefficient matrix via weighted least squares:
-        b = self.D * self.output_samples
-        self.C = np.linalg.lstsq(self.A, b, rcond = None)[0]
-        
-        # Store Gram matrix for condition number calculations, etc 
-        #self.G = self.A.T @ self.A
-        #self.approx_coeffs = self.C.flatten(order='F')
-    
-    def build_vandermonde(self, inputs):
+        dev = gram_deviation(self.A)
+        if warn and dev > delta:
+            warnings.warn(f"||G - I||_2 = {dev:.3g} > delta = {delta}: the least-squares problem may be unstable.")
+        return dev
+
+
+class BlockWLS(_GramMixin):
+    """
+    WLS operator learning with inputs drawn from a known product measure rho.
+
+    Example
+    -------
+        model = BlockWLS(index_set, measures).fit(x_train, y_train, optimal=True)
+        y_pred = model.predict(x_test)
+        model.cond()             # condition number of the Gram matrix
+
+    Parameters
+    ----------
+    index_set : (N, d) int array
+        Multi-indices of the polynomials spanning P.
+    measures : list of d 1-D measures (or Jacobi parameters, see owls.measures.as_measures).
+    """
+
+    def __init__(self, index_set, measures):
+        self.index_set = np.asarray(index_set).astype(int)
+        self.N, self.d = self.index_set.shape
+        self.measures = as_measures(measures, self.d)
+        self.C = None
+
+    def vandermonde(self, x):
+        """V[i, n] = p_{lambda_n}(x_i)."""
+        return vandermonde(x, self.index_set, self.measures)
+
+    def fit(self, x, y, optimal=True):
         """
-        Build the Vandermonde matrix evaluating the polynomial bases at the given inputs.
-        
-        Parameters:
-            inputs : ndarray, shape (M, input_dim)
-        
-        Returns:
-            V : ndarray, shape (M, N)
-                The Vandermonde matrix.
+        Fit the coefficients C from training pairs.
+
+        x : (M, d) training inputs. Draw them with owls.sample_optimal if optimal=True,
+            or with owls.sample_rho if optimal=False.
+        y : (M, d_out) training outputs (real or complex), in an orthonormal output basis.
+        optimal : True for optimal-measure weights, False for unit (Monte Carlo) weights.
         """
-        M = inputs.shape[0]
-        V = np.ones((M, self.N))
-        for n in range(self.N):
-            for j in range(self.input_dim):
-                deg = int(self.index_set[n, j])
-                if deg != 0:
-                    poly_eval = self.JacobiPolys[j].eval_1d(inputs[:, j], deg)[:, 0]
-                    V[:, n] *= poly_eval
-        return V
-    
-    def apply(self, new_inputs):
+        _check_bool(optimal)
+        y = np.asarray(y)
+        if y.ndim == 1:
+            y = y[:, None]
+        V = self.vandermonde(x)
+        self.M = V.shape[0]
+        self.optimal = optimal
+        self.weights = optimal_weights(V) if optimal else np.ones(self.M)
+        D = np.sqrt(self.weights / self.M)[:, np.newaxis]
+        self.A = D * V
+        self.C = np.linalg.lstsq(self.A, D * y, rcond=None)[0]
+        return self
+
+    def predict(self, x):
+        """Apply the learned operator: returns the (M_new, d_out) predicted output coefficients."""
+        if self.C is None:
+            raise RuntimeError("Call fit() before predict()")
+        return self.vandermonde(x) @ self.C
+
+    def as_matrix(self):
         """
-        Apply the learned operator to new inputs.
-        
-        Parameters:
-            new_inputs : ndarray, shape (M_new, input_dim)
-        
-        Returns:
-            approx : ndarray, shape (M_new, out_dim)
-                Approximated outputs.
+        For a linear index set (rows are unit vectors e_j), return the learned operator
+        as a d_out x d matrix K with K[m, j] = <K_tilde xi_j, psi_m>.
+
+        Since p_1(x) = (x - mean_j) / std_j, this is C divided row-wise by std_j
+        (if the means are not zero it is the linear part of an affine map).
         """
-        V_new = self.build_vandermonde(new_inputs)
-        approx = V_new @ self.C
-        return approx
-    
-    def greedy_reduce(self, test_input_samples, test_output_samples=None, init_size=1, 
-                    max_iters=10, top_k=10, plot=True, log=True):
-        """
-        Perform greedy adaptive basis selection.
-        
-        Overview:
-            1. Precompute full quantities:
-                - V_dict: Full Vandermonde matrix (training data).
-                - D_full: Diagonal weight matrix from the full operator.
-                - V_test_full: Full Vandermonde matrix (test data).
-            2. Initialize the active index set with init_size basis functions.
-            3. For each iteration:
-                a. Extract the reduced Vandermonde matrix V_active corresponding to the active set.
-                b. Solve the weighted LS problem on V_active to obtain coefficients C.
-                c. Compute training predictions and the residual error.
-                d. Using the full weighted matrix from V_dict, compute residual scores for all candidate basis functions.
-                e. Select the top_k remaining indices with the highest residual energy.
-                f. Evaluate test error using the current active subspace.
-                g. Update the active index set (after error evaluation) and repeat.
-            4. If the active set equals the full dictionary, the solution matches the full operator.
-        
-        The weights (D_full) are computed from the full dictionary and are kept constant
-        so that the optimal sampling measure is defined on the full dictionary.
-        
-        Parameters:
-            test_input_samples : ndarray, shape (M_test, d_in)
-                Test inputs used for evaluation.
-            test_output_samples : ndarray, shape (M_test, out_dim), optional
-                Test outputs for error computation.
-            init_size : int, default 1
-                Initial number of active basis functions.
-            max_iters : int, default 10
-                Maximum iterations for the greedy algorithm.
-            top_k : int, default 10
-                Number of new indices to add per iteration.
-            plot : bool, default True
-                If True, plot convergence results.
-            log : bool, default True
-                If True, output diagnostic print statements.
-        
-        Returns:
-                (active_indices, selected_index_paths, train_errors_list, test_errors_list)
-        """
-        # Full dictionary: index_set stored from initialization.
-        DictIdxs = self.index_set  # (N, d_in)
-        N = DictIdxs.shape[0]
-        
-        # Precomputed full Vandermonde (training) and weight matrix.
-        V_dict = self.V            # (M, N)
-        D_full = self.D            # (M, 1)
-        # Precompute test Vandermonde matrix.
-        V_test_full = self.build_vandermonde(test_input_samples)  # (M_test, N)
-        
-        # ----- Initialize Active and Remaining Indices -----
-        ActiveRows = np.arange(init_size)  # Starting active index set.
-        RemainingRows = np.setdiff1d(np.arange(N), ActiveRows)
-        
-        # Lists for tracking over iterations.
-        selected_index_paths = []
-        train_errors_list = []
-        test_errors_list = []
-        basis_sizes = []
-        residual_scores_matrix = []  # For plotting the evolution of residual scores
-        
-        if log:
-            print("\nBeginning Greedy Adaptive Basis Selection")
-        
-        # ----- Greedy Loop -----
-        for it in range(max_iters):
-            if log:
-                print(f"--- Iteration {it+1} ---")
-            
-            # (a) Extract V_active from full Vandermonde.
-            ActiveRows = np.unique(ActiveRows)
-            V_active = V_dict[:, ActiveRows]     # Shape: (M, N_sub)
-            N_sub = V_active.shape[1]
-            
-            # (b) Solve the weighted LS problem on the active subspace.
-            A = D_full * V_active                # (M, N_sub)
-            b = D_full * self.output_samples     # (M, out_dim)
-            T = A.T @ b                          # (N_sub, out_dim)
-            G = A.T @ A                          # (N_sub, N_sub)
-            C = np.linalg.solve(G, T)            # (N_sub, out_dim)
-            
-            # (c) Compute training predictions and residual error.
-            pred_train = V_active @ C                    # (M, out_dim)
-            residual = pred_train - self.output_samples  # (M, out_dim)
-            
-            # (d) Compute residual scores using the full weighted dictionary.
-            residual_weighted = D_full * residual         # (M, out_dim)
-            V_weighted = D_full * V_dict                  # (M, N)
+        L = self.index_set
+        if not (np.all(L.sum(axis=1) == 1) and np.all(L.max(axis=1) == 1)):
+            raise ValueError("as_matrix() only applies to linear index sets (rows e_j)")
+        j_of_row = L.argmax(axis=1)
+        std = np.array([m.std for m in self.measures])
+        K = np.zeros((self.C.shape[1], self.d), dtype=self.C.dtype)
+        K[:, j_of_row] = (self.C / std[j_of_row, None]).T
+        return K
 
-            candidate_projections = V_weighted.T @ residual_weighted  # (N, out_dim)
-            # Compute L2 norm for each candidate (across output dimensions).
-            scores = np.linalg.norm(candidate_projections, axis=1) / np.linalg.norm(V_weighted, axis = 0) ### COME BACK TO THIS 
-            # Record scores over iterations.
-            residual_scores_matrix.append(scores)
-            
-            # (e) Select the top_k new indices from the remaining indices.
-            scores_remaining = scores[RemainingRows]
-            top_indices = np.argsort(scores_remaining)[-top_k:]
-            new_rows = RemainingRows[top_indices]
-            
-            # (f) Evaluate test error on the active subspace.
-            V_test = V_test_full[:, ActiveRows]  # (M_test, N_sub)
-            V_test = V_test.reshape(V_test_full.shape[0], -1)  # Ensure 2D shape if N_sub = 1.
-            test_pred = V_test @ C                # (M_test, out_dim)
-            train_error = np.linalg.norm(pred_train - self.output_samples, axis=1).mean()
-            if test_output_samples is not None:
-                test_error = np.linalg.norm(test_pred - test_output_samples, axis=1).mean()
-            else:
-                test_error = np.nan
-            
-            train_errors_list.append(train_error)
-            test_errors_list.append(test_error)
-            basis_sizes.append(len(ActiveRows))
-            
-            if log:
-                print(f"Active basis size: {len(ActiveRows)}, Remaining: {len(RemainingRows)}")
-                print(f"Mean train error: {train_error:.3e}")
-                if test_output_samples is not None:
-                    print(f"Mean test error:  {test_error:.3e}")
 
-            # Check if the full dictionary has been recovered.
-            if len(ActiveRows) == N:
-                if log:
-                    print("Full basis recovered. Terminating greedy selection.")
-                break
-            
-            # (g) Update the active index set 
-            ActiveRows = np.concatenate([ActiveRows, new_rows])
-            RemainingRows = np.setdiff1d(np.arange(N), ActiveRows)
-            selected_index_paths.append(ActiveRows.copy())
-        
-        # ----- Plot convergence results if requested -----
-        if plot:
-            
-            basis_sizes = np.array(basis_sizes)
-            train_errors = np.array(train_errors_list)
-            test_errors = np.array(test_errors_list)
+class EmpiricalWLS(_GramMixin):
+    """
+    WLS operator learning from a fixed dataset ("pool") of input-output pairs.
 
-            # Fit log-log slope for test error
-            log_x = np.log(basis_sizes)
+    Use this when you cannot choose where the inputs are: the input measure is the
+    empirical (uniform discrete) measure on the S pool inputs. The polynomials
+    p_lambda are generally not orthonormal for this measure, so we orthonormalize them
+    with a QR factorization of the S x N matrix V / sqrt(S) = Q R. The functions
+    b(x) = V(x) R^{-1} are then orthonormal on the pool, and the optimal sampling
+    measure is the discrete distribution
 
-            log_y_test = np.log(test_errors)
-            slope_test, intercept_test = np.polyfit(log_x, log_y_test, deg=1)
-            alpha_test = -slope_test
-            ref_line_test = np.exp(intercept_test) * basis_sizes**(-alpha_test)
+        Pr{pick pool point i} = ||Q[i, :]||^2 / N    (the leverage scores).
 
-            # Fit log-log slope for train error
-            log_y_train = np.log(train_errors)
-            slope_train, intercept_train = np.polyfit(log_x, log_y_train, deg=1)
-            alpha_train = -slope_train
-            ref_line_train = np.exp(intercept_train) * basis_sizes**(-alpha_train)
+    Example
+    -------
+        model = EmpiricalWLS(x_pool, y_pool, index_set, measures)
+        model.fit(M, optimal=True, rng=0)
+        y_pred = model.predict(x_test)
 
-            # Plot 
-            plt.figure()
-            plt.plot(basis_sizes, train_errors, '--o', label="Train Error", color='black')
-            plt.plot(basis_sizes, test_errors, '--o', label="Test Error", color='red')
-            plt.plot(basis_sizes, ref_line_train, ':', color='gray', label=fr"Train Fit: $\mathcal{{O}}(n^{{-{alpha_train:.2f}}})$")
-            plt.plot(basis_sizes, ref_line_test, ':', color='orange', label=fr"Test Fit: $\mathcal{{O}}(n^{{-{alpha_test:.2f}}})$")
+    The measures only choose which polynomial family is used (e.g. Jacobi polynomials
+    for inputs scaled to [-1, 1]); any reasonable choice works because of the QR step.
+    """
 
-            plt.xlabel("Reduced Basis Dimension (Active Index Set Size)")
-            plt.ylabel(r"Mean $L^2_{\mathcal{Y}}$ Error")
-            plt.yscale('log')
-            plt.xscale('log')
-            plt.title("Convergence of Adaptive Operator Learning")
-            plt.legend()
-            plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-            plt.tight_layout()
-            plt.show()
+    def __init__(self, x_pool, y_pool, index_set, measures):
+        self.x_pool = np.asarray(x_pool)
+        self.y_pool = np.asarray(y_pool)
+        self.index_set = np.asarray(index_set).astype(int)
+        self.S, self.d = self.x_pool.shape
+        self.N = self.index_set.shape[0]
+        self.measures = as_measures(measures, self.d)
+        self.C = None
 
-            
-            # ----- Plot Residual Heatmap -----
-            residual_scores_matrix = np.array(residual_scores_matrix)
+        if all(isinstance(m, Jacobi) for m in self.measures):
+            eps = 1e-10
+            if not (np.all(self.x_pool >= -1.0 - eps) and np.all(self.x_pool <= 1.0 + eps)):
+                raise ValueError("Inputs must be scaled to lie in [-1, 1] for Jacobi polynomials.")
 
-            # Flatten to compute percentiles globally
-            residuals_flat = residual_scores_matrix.flatten()
-            cutoff = 5
-            vmin = np.percentile(residuals_flat, cutoff)
-            vmax = np.percentile(residuals_flat, 100-cutoff)
+        V = vandermonde(self.x_pool, self.index_set, self.measures) / np.sqrt(self.S)
+        self.Q, self.R = np.linalg.qr(V)
+        K = (self.S / self.N) * np.linalg.norm(self.Q, axis=1) ** 2
+        self.leverage = K / np.sum(K)
 
-            # Avoid vmin being too small for LogNorm
-            vmin = max(vmin, 1e-8)
+    def fit(self, M, optimal=True, rng=None):
+        """Draw M pool points (with replacement) and fit. optimal=False draws uniformly with unit weights."""
+        _check_bool(optimal)
+        rng = as_rng(rng)
+        if optimal:
+            self.sample_idx = rng.choice(np.arange(self.S), M, replace=True, p=self.leverage)
+        else:
+            self.sample_idx = rng.choice(np.arange(self.S), M, replace=True)
+        self.M = M
+        self.optimal = optimal
 
-            norm = colors.LogNorm(vmin=vmin, vmax=vmax)
-        
-            plt.figure(figsize=(12, 6))
-            plt.imshow(residual_scores_matrix, aspect='auto', cmap='inferno', origin='lower', norm = norm)
-            plt.colorbar(label=f"Residual Magnitude (Log Scale, ignoring 5% energy tails) ")
-            plt.xlabel("Full Dictionary Index")
-            plt.ylabel("Iteration")
-            plt.title("Residual Energy Distribution Over Iterations")
+        B = np.sqrt(self.S) * self.Q[self.sample_idx, :]  # orthonormal basis at the sampled points
+        self.weights = optimal_weights(B) if optimal else np.ones(M)
+        sqrt_w = np.sqrt(self.weights / M)
+        self.A = (B.T * sqrt_w).T
+        g = self.A.T @ ((self.y_pool[self.sample_idx].T * sqrt_w).T)
+        self.C = np.linalg.solve(self.A.T @ self.A, g)
+        return self
 
-            # Add horizontal lines between each iteration
-            for i in range(1, residual_scores_matrix.shape[0]):
-                plt.hlines(i - 0.5, xmin=-0.5, xmax=residual_scores_matrix.shape[1] - 0.5,
-                        colors='white', linewidth=0.5, linestyles='-')
-            plt.tight_layout()
-            plt.show()
-        
-        # Return the results. If test data is provided, include the best model and best active set.
-        
-        return ActiveRows, selected_index_paths, train_errors_list, test_errors_list
+    def _basis(self, x):
+        """Orthonormalized basis b(x) = V(x) R^{-1}."""
+        x = np.asarray(x)
+        n = x.shape[0]
+        V = vandermonde(x, self.index_set, self.measures) / np.sqrt(n)
+        return np.sqrt(n) * np.linalg.solve(self.R.T, V.T).T
+
+    def predict(self, x):
+        """Predicted output coefficients at new inputs x (same scaling as the pool)."""
+        if self.C is None:
+            raise RuntimeError("Call fit() before predict()")
+        return self._basis(x) @ self.C
+
+    def predict_on_fit_samples(self):
+        """Predictions at the pool points used for the fit."""
+        return np.sqrt(self.S) * self.Q[self.sample_idx, :] @ self.C
+
+    def compute_errors(self, x, y):
+        """Per-sample absolute and relative errors ||y_pred - y|| and ||y_pred - y|| / ||y||."""
+        abs_err = np.linalg.norm(self.predict(x) - y, axis=1)
+        return abs_err, abs_err / np.linalg.norm(y, axis=1)
+
+    def compute_fit_sample_errors(self):
+        """Per-sample absolute and relative errors on the pool points used for the fit."""
+        y = self.y_pool[self.sample_idx]
+        abs_err = np.linalg.norm(self.predict_on_fit_samples() - y, axis=1)
+        return abs_err, abs_err / np.linalg.norm(y, axis=1)
+
+
+def learn_operator(solver, measures, index_set, M=None, optimal=True, rng=None):
+    """
+    The whole pipeline in one call: sample inputs, run your solver, fit.
+
+    Parameters
+    ----------
+    solver : function
+        Maps an (M, d) array of input coefficients to an (M, d_out) array of output
+        coefficients (in an orthonormal basis of the output space).
+    measures : list of d 1-D input measures (or Jacobi parameters).
+    index_set : (N, d) int array of multi-indices.
+    M : int, optional
+        Number of training samples. Default: owls.utils.sample_size(N), the number the
+        theory asks for (delta = eps = 1/2).
+    optimal : bool
+        True: draw inputs from the optimal measure and use optimal weights.
+        False: draw inputs from rho (Monte Carlo) with unit weights.
+    rng : seed or random generator.
+
+    Returns
+    -------
+    A fitted BlockWLS model. The training data are kept as model.x_train, model.y_train.
+    """
+    from .utils import sample_size
+
+    _check_bool(optimal)
+    rng = as_rng(rng)
+    index_set = np.asarray(index_set).astype(int)
+    measures = as_measures(measures, index_set.shape[1])
+    if M is None:
+        M = sample_size(index_set.shape[0])
+
+    x = sample_optimal(M, index_set, measures, rng) if optimal else sample_rho(M, measures, rng)
+    y = np.asarray(solver(x))
+    model = BlockWLS(index_set, measures).fit(x, y, optimal=optimal)
+    model.x_train, model.y_train = x, y
+    return model

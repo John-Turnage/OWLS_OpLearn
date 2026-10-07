@@ -1,77 +1,107 @@
-import numpy as np
-import matplotlib.pyplot as plt
+"""
+Multi-index sets Lambda that pick out which polynomials span the space P.
+
+Each row of an index set is a multi-index lambda = (lambda_1, ..., lambda_d), and
+stands for the d-variate polynomial
+
+    p_lambda(f) = p_{lambda_1}(f_1) * p_{lambda_2}(f_2) * ... * p_{lambda_d}(f_d),
+
+where f_j is the j-th input coefficient and p_n is the degree-n orthonormal
+polynomial of the j-th input measure. The number of rows is N_eff = dim P.
+"""
+import warnings
 from collections import deque
 
-def index_set(d, param, max_index = 100000000, weights=None, max_size=100000000, type="hc", p_norm=2):
-    """
-    Generate an index set in d dimensions with a given criterion:
-      - Hyperbolic cross: Prod_{i=1}^d (1+n_i)^(1/weights[i]) <= param+1,
-      - lp ball: ((Sum_{i=1}^d (1+n_i)^(p_norm/weights[i]))^(1/p_norm)) <= param.
+import numpy as np
 
-    Parameters:
-        d (int): Dimension of the index set.
-        param (int): Parameter controlling the size of the index set:
-                     for 'hc': corresponds to H_c (with threshold param+1),
-                     for 'lp': corresponds to the lp ball radius (with threshold param).
-        max_index (int): Maximum value allowed for any index coordinate.
-        weights (array-like, optional): Anisotropic weights (each in (0, 1]). If None, defaults to ones.
-        max_size (int): Maximum number of indices to generate.
-        type (str): Either 'lp' for lp ball or 'hc' for hyperbolic cross.
-        p_norm (float, optional): The norm exponent used for the lp ball; only used if type=='lp'. Default is 2.
 
-    Returns:
-        np.ndarray: Sorted array of index tuples in the generated index set.
+def index_set(d, k, kind="hc", weights=None, max_degree=None, max_size=None, p=2):
     """
-    if weights is None: 
+    Build a (possibly anisotropic) downward-closed index set in d dimensions.
+
+    The weights w_j in (0, 1] make some directions "cheaper" than others:
+    a smaller w_j allows lower polynomial degrees in direction j.
+
+        kind = "hc" (hyperbolic cross):   prod_j (1 + lambda_j)^(1 / w_j)   <= k + 1
+        kind = "lp" (weighted lp ball):   (sum_j lambda_j^(p / w_j))^(1/p)  <= k
+
+    With all weights equal to 1 these are the usual hyperbolic cross and lp ball.
+    Note that the weights enter as an exponent 1/w_j (not as a multiplier).
+
+    Parameters
+    ----------
+    d : int
+        Number of input coordinates.
+    k : float
+        Size parameter (larger k gives a bigger set).
+    kind : {"hc", "lp"}
+        Which criterion to use.
+    weights : array of length d, optional
+        Anisotropy weights in (0, 1]. Default: all ones. A weight of exactly 0
+        is replaced by 1e-10, which switches that direction off.
+    max_degree : int, optional
+        Largest allowed degree in any single direction.
+    max_size : int, optional
+        Stop once this many indices have been found (a warning is issued).
+        Indices are found in breadth-first order, so a truncated set is
+        still downward closed, but it is no longer exactly the set above.
+    p : float
+        Exponent of the lp ball (ignored for "hc").
+
+    Returns
+    -------
+    (N, d) int array of multi-indices, sorted lexicographically.
+    """
+    if kind not in ("hc", "lp"):
+        raise ValueError(f"Unknown kind '{kind}': use 'hc' or 'lp'")
+    if max_degree is None:
+        max_degree = np.inf
+    if max_size is None:
+        max_size = np.inf
+
+    if weights is None:
         weights = np.ones(d)
     weights = np.array(weights, dtype=float)
     if weights.shape[0] != d:
         raise ValueError("Length of the weight array must match the dimension d")
-    # Avoid zero weights (replace with a very small number)
     weights[weights == 0] = 1e-10
     if not np.all((weights > 0) & (weights <= 1)):
         raise ValueError("All weights must lie in (0,1]")
 
-    index_set = set()
-    visited = set()  # Track indices already queued to avoid duplicates
-    queue = deque([(0,) * d])
-    visited.add((0,) * d)
-    
-    if type == 'hc':
-        threshold = param + 1  # Constant threshold for comparison
-    elif type == 'lp':
-        threshold = param
+    threshold = k + 1 if kind == "hc" else k
 
+    found = set()
+    visited = {(0,) * d}
+    queue = deque([(0,) * d])
+    truncated = False
+
+    # Breadth-first search outward from the zero index. Because both criteria
+    # increase with every lambda_j, an index that fails the test cannot have a
+    # neighbor further out that passes, so we only expand indices that pass.
     while queue:
         current = queue.popleft()
-        
-        # Compute the criterion based on the chosen type.
-        if type == "hc":
-            prod = 1.0
+
+        if kind == "hc":
+            criterion = 1.0
             for i, n in enumerate(current):
-                prod *= (1 + n) ** (1.0 / weights[i])
-            criterion = prod
-        elif type == "lp":
+                criterion *= (1 + n) ** (1.0 / weights[i])
+        else:
             s = 0.0
             for i, n in enumerate(current):
-                s += (n) ** (p_norm / weights[i])
-            criterion = s ** (1.0 / p_norm)
-        else:
-            raise ValueError("Unknown type specified: use 'lp' or 'hc'")
+                s += n ** (p / weights[i])
+            criterion = s ** (1.0 / p)
 
-        # Prune if the current index fails the condition
         if criterion > threshold:
             continue
 
-        # Add the current index (if below max_size)
-        if len(index_set) < max_size:
-            index_set.add(current)
+        if len(found) < max_size:
+            found.add(current)
         else:
+            truncated = True
             break
 
-        # Enqueue neighbors (increment one coordinate at a time, bounded by max_index)
         for i in range(d):
-            if current[i] < max_index:
+            if current[i] < max_degree:
                 neighbor = list(current)
                 neighbor[i] += 1
                 neighbor = tuple(neighbor)
@@ -79,78 +109,19 @@ def index_set(d, param, max_index = 100000000, weights=None, max_size=100000000,
                     visited.add(neighbor)
                     queue.append(neighbor)
 
-    return np.array(sorted(index_set))
-if __name__ == "__main__":
-    # ------------------ 2D Tests with Graphs ------------------
-    # Parameters for 2D examples
-    d = 2
-    max_index = 40
-    param_hc = 20
-    param_lp = 30
-    weights = [1, 1]
-    p_norm = 0.3333
+    if truncated:
+        warnings.warn(f"index_set stopped at max_size={max_size}; the full set is larger.")
 
-    # Generate index sets
-    indices_hc = index_set(d, param_hc, max_index, weights, type="hc")
-    indices_lp = index_set(d, param_lp, max_index, weights, type="lp", p_norm=p_norm)
+    return np.array(sorted(found), dtype=int)
 
-    # Print some summary info
-    print("2D Hyperbolic Cross: {} indices".format(len(indices_hc)))
-    print("2D lp Ball: {} indices".format(len(indices_lp)))
 
-    # Plotting the 2D index sets side by side
-    plt.figure(figsize=(12, 6))
+def linear_index_set(n, d):
+    """
+    Index set for *linear* operators: the first n unit vectors e_1, ..., e_n in d dimensions.
 
-    plt.subplot(1, 2, 1)
-    plt.scatter(indices_hc[:, 0], indices_hc[:, 1], s=10)
-    plt.title(f"Hyperbolic Cross Index Set (2D)\nparam={param_hc}")
-    plt.xlabel("Index 0")
-    plt.ylabel("Index 1")
-    plt.grid(True)
-
-    plt.subplot(1, 2, 2)
-    plt.scatter(indices_lp[:, 0], indices_lp[:, 1], s=10, color='red')
-    plt.title(f"lp Ball Index Set (2D)\nparam={param_lp}, p_norm={p_norm}")
-    plt.xlabel("Index 0")
-    plt.ylabel("Index 1")
-    plt.grid(True)
-
-    plt.tight_layout()
-    plt.show()
-
-    # ------------------ 3D Tests with Graphs ------------------
-    # Parameters for 3D examples
-    d = 3
-    max_index = 40
-    param_hc_3d = 10
-    param_lp_3d = 10
-    weights = [1, 1, 1]
-
-    # Generate index sets for 3D
-    indices_hc_3d = index_set(d, param_hc_3d, max_index, weights, type="hc")
-    indices_lp_3d = index_set(d, param_lp_3d, max_index, weights, type="lp", p_norm=p_norm)
-
-    print("3D Hyperbolic Cross: {} indices".format(len(indices_hc_3d)))
-    print("3D lp Ball: {} indices".format(len(indices_lp_3d)))
-
-    # 3D plotting using matplotlib's mplot3d
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
-    fig = plt.figure(figsize=(12, 6))
-
-    ax1 = fig.add_subplot(121, projection='3d')
-    ax1.scatter(indices_hc_3d[:, 0], indices_hc_3d[:, 1], indices_hc_3d[:, 2])
-    ax1.set_title(f"Hyperbolic Cross Index Set (3D)\nparam={param_hc_3d}")
-    ax1.set_xlabel("Index 0")
-    ax1.set_ylabel("Index 1")
-    ax1.set_zlabel("Index 2")
-
-    ax2 = fig.add_subplot(122, projection='3d')
-    ax2.scatter(indices_lp_3d[:, 0], indices_lp_3d[:, 1], indices_lp_3d[:, 2], color='red')
-    ax2.set_title(f"lp Ball Index Set (3D)\nparam={param_lp_3d}, p_norm={p_norm}")
-    ax2.set_xlabel("Index 0")
-    ax2.set_ylabel("Index 1")
-    ax2.set_zlabel("Index 2")
-
-    plt.tight_layout()
-    plt.show()
+    The polynomial for e_j is p_1(f_j) = (f_j - mean_j) / std_j, so the space
+    spanned is the set of (affine) linear functions of the first n coefficients.
+    """
+    if n > d:
+        raise ValueError("Need n <= d")
+    return np.eye(n, d, dtype=int)
