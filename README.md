@@ -28,7 +28,7 @@ With $M \gtrsim N \log N$ optimally drawn samples, $\mathbf G$ is well condition
 Requires Python ≥ 3.10.
 
 ```bash
-git clone <this repository>
+git clone https://github.com/John-Turnage/OWLS_OpLearn.git
 cd OWLS_OpLearn
 pip install -r requirements.txt   # numpy, scipy, matplotlib, plus what the experiments need
 pip install -e .                  # makes `import owls` work from anywhere
