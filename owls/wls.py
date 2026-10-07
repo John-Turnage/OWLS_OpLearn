@@ -216,7 +216,11 @@ class EmpiricalWLS(_GramMixin):
         self.weights = optimal_weights(B) if optimal else np.ones(M)
         sqrt_w = np.sqrt(self.weights / M)
         self.A = (B.T * sqrt_w).T
-        g = self.A.T @ ((self.y_pool[self.sample_idx].T * sqrt_w).T)
+        # Right-hand side g = A^T diag(sqrt_w) y[sample_idx]. Pool points drawn more than once
+        # are summed first, so the (possibly huge) M x d_out array y[sample_idx] is never formed.
+        A_pool = np.zeros((self.S, self.N))
+        np.add.at(A_pool, self.sample_idx, self.A * sqrt_w[:, None])
+        g = A_pool.T @ self.y_pool
         self.C = np.linalg.solve(self.A.T @ self.A, g)
         return self
 

@@ -29,13 +29,14 @@ or were regenerated with the cleaned-up code after a bug fix (see `../ERRATA.md`
 | `burgers/example_solutions` | example predictions; test error distribution | Fig. 7 (`vB_err_dist.pdf`) | v1 (data not saved) | ≈ 5 min (est.) |
 | `burgers/output_energy` | output energy lost by truncating to d_out modes | Fig. 8a (`vb_out_truc_err.pdf`) | regenerated | 45 s |
 | `burgers/output_dimension` | test error vs. d_out | Fig. 8b (`vb_truncation_error_with_viscosity.pdf`) | v1 | ≈ 30 min (est.) |
-| `navier_stokes/conditioning` | cond(G) vs. N_eff, optimal vs. uniform sampling of the dataset | Fig. 9a (`NS_CondNum.pdf`) | v1 | not timed |
-| `navier_stokes/error_vs_sobolev_alpha` | test error and dim Y_h vs. the output norm H^alpha | Fig. 9b (`NS_err.pdf`) | v1 | not timed |
-| `navier_stokes/learn_operator` | median-error test sample, alpha = -2 | Fig. 10 (`NS_med_err.png`) | v1 (data not saved) | not timed |
+| `navier_stokes/conditioning` | cond(G) vs. N_eff, optimal vs. uniform sampling of the dataset | Fig. 9a (`NS_CondNum.pdf`) | v1 | 2.5 min |
+| `navier_stokes/error_vs_sobolev_alpha` | test error and dim Y_h vs. the output norm H^alpha | Fig. 9b (`NS_err.pdf`) | v1 | 3 min |
+| `navier_stokes/learn_operator` | median-error test sample, alpha = -2 | Fig. 10 (`NS_med_err.png`) | v1 (data not saved) | 1 min |
 
 Run times are for a full rerun (`RECOMPUTE = True`) on an Apple M3 Pro (12 cores, 18 GB RAM). The largest
 Poisson case needs about 5 GB of memory. "est." marks run times estimated from the measured speed of the Burgers solver (about 46 solves per second at 200 modes and 2000 time steps) rather than timed. The Navier–Stokes notebooks need the dataset in
-`navier_stokes/raw_data/` (see the README there) and were not timed for this release.
+`navier_stokes/raw_data/` (see the README there) and up to about 7 GB of memory (the $\alpha = 5$ case of
+`error_vs_sobolev_alpha` has 14231 complex output coefficients).
 
 ## Saved data
 

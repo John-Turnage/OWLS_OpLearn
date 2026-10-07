@@ -143,8 +143,11 @@ class HAlphaBasisCompressor:
         """Reduced H^alpha coefficients of one field (N, N) -> (M,), or of a stack (S, N, N) -> (S, M)."""
         if self.basis_indices is None:
             raise ValueError("The compressor must be fit before projecting data.")
-        coeffs = self._coefficients(dat)
-        return coeffs.reshape(coeffs.shape[:-2] + (-1,))[..., self.basis_indices]
+        if dat.ndim == 3:  # a stack of fields: process in chunks to keep the FFT temporaries small
+            chunks = [self._coefficients(dat[i:i + 500]).reshape(-1, self.N * self.N)[:, self.basis_indices]
+                      for i in range(0, dat.shape[0], 500)]
+            return np.concatenate(chunks)
+        return self._coefficients(dat).flatten()[self.basis_indices]
 
     def reconstruct_coeffs(self, reduced_coeffs):
         """Full (N, N) array of H^alpha coefficients, zero outside the retained modes."""
