@@ -31,7 +31,7 @@ or were regenerated with the cleaned-up code after a bug fix (see `../ERRATA.md`
 | `burgers/output_dimension` | test error vs. d_out | Fig. 8b (`vb_truncation_error_with_viscosity.pdf`) | v1 | ≈ 30 min (est.) |
 | `navier_stokes/conditioning` | cond(G) vs. N_eff, optimal vs. uniform sampling of the dataset | Fig. 9a (`NS_CondNum.pdf`) | v1 | 2.5 min |
 | `navier_stokes/error_vs_sobolev_alpha` | test error and dim Y_h vs. the output norm H^alpha | Fig. 9b (`NS_err.pdf`) | v1 | 3 min |
-| `navier_stokes/learn_operator` | median-error test sample, alpha = -2 | Fig. 10 (`NS_med_err.png`) | v1 (data not saved) | 1 min |
+| `navier_stokes/learn_operator` | median-error test sample, alpha = -2 | Fig. 10 (`NS_med_err.png`) | regenerated | 1 min |
 
 Run times are for a full rerun (`RECOMPUTE = True`) on an Apple M3 Pro (12 cores, 18 GB RAM). The largest
 Poisson case needs about 5 GB of memory. "est." marks run times estimated from the measured speed of the Burgers solver (about 46 solves per second at 200 modes and 2000 time steps) rather than timed. The Navier–Stokes notebooks need the dataset in
@@ -53,3 +53,4 @@ Poisson case needs about 5 GB of memory. "est." marks run times estimated from t
 | `burgers/data/out_dim_dat.npy` | relative test error, viscosity x d_out = 2, 12, ..., 192 |
 | `navier_stokes/data/Condition_{Dims,Ind,Std}.npy` | N_eff and cond(G) for HC(6), ..., HC(24) |
 | `navier_stokes/data/{alphas,rel_Ha_errs,Y_dims,Ns}.npy` | alpha, mean relative H^alpha test error, dim Y_h, N_eff |
+| `navier_stokes/data/learn_operator.npz` | alpha = -2: per-sample test errors, and true and predicted vorticity of the median-error test sample |
