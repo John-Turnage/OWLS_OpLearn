@@ -1,0 +1,13 @@
+# Tested with Python 3.12.7, numpy 1.26.4, scipy 1.13.1, matplotlib 3.9.2,
+# seaborn 0.13.2, scikit-learn 1.5.1, torch 2.5.1.
+
+# The owls package
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+
+# Only needed for the experiments
+jupyter
+seaborn>=0.12        # Burgers figures
+scikit-learn>=1.2    # Navier-Stokes (PCA)
+torch>=2.0           # Navier-Stokes (only to read the .pt dataset files; the CPU version is enough)

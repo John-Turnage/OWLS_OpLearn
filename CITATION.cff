@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper below."
+title: "OWLS: optimally weighted least squares for operator learning"
+license: MIT
+authors:
+  - family-names: Turnage
+    given-names: John
+    affiliation: University of Utah
+  - family-names: Lowery
+    given-names: Matthew
+    affiliation: University of Utah
+  - family-names: Jakeman
+    given-names: John
+    affiliation: Sandia National Laboratories
+  - family-names: Morrow
+    given-names: Zachary
+    affiliation: Sandia National Laboratories
+  - family-names: Narayan
+    given-names: Akil
+    affiliation: University of Utah
+  - family-names: Shankar
+    given-names: Varun
+    affiliation: University of Utah
+preferred-citation:
+  type: article
+  title: "An Optimal Weighted Least-Squares Method for Operator Learning"
+  authors:
+    - family-names: Turnage
+      given-names: John
+    - family-names: Lowery
+      given-names: Matthew
+    - family-names: Jakeman
+      given-names: John
+    - family-names: Morrow
+      given-names: Zachary
+    - family-names: Narayan
+      given-names: Akil
+    - family-names: Shankar
+      given-names: Varun
+  journal: "arXiv preprint arXiv:2512.11168"
+  year: 2025
+  doi: 10.48550/arXiv.2512.11168
+  url: "https://arxiv.org/abs/2512.11168"
